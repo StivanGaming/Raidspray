@@ -1,3 +1,4 @@
+```html
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -32,7 +33,6 @@
             color: #e5e5e5;
             font-family: 'Inter', sans-serif;
         }
-        /* Custom scrollbar */
         ::-webkit-scrollbar {
             width: 6px;
             height: 6px;
@@ -64,8 +64,12 @@
                 </h1>
             </div>
 
-            <!-- Upload Action Button -->
-            <div>
+            <!-- Sync Indicator & Upload Action -->
+            <div class="flex items-center space-x-3">
+                <div id="syncStatus" class="hidden sm:flex items-center space-x-1.5 text-[11px] text-gray-400 bg-[#141414] border border-[#222222] px-2.5 py-1.5 rounded">
+                    <span class="w-2 h-2 rounded-full bg-yellow-500 animate-pulse" id="syncDot"></span>
+                    <span id="syncText">Connecting cloud...</span>
+                </div>
                 <button onclick="openUploadModal()" class="bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold px-4 py-2 rounded transition-colors flex items-center space-x-2 shadow-md shadow-blue-600/20">
                     <i class="fa-solid fa-plus"></i>
                     <span>Upload Art</span>
@@ -121,7 +125,7 @@
 
     <!-- Footer -->
     <footer class="border-t border-[#222222] bg-[#0a0a0a] py-6 text-center text-xs text-gray-500">
-        <p>raidspray &bull; Clean image board &bull; Local browser storage</p>
+        <p>raidspray &bull; Clean image board &bull; Cross-device cloud sync</p>
     </footer>
 
     <!-- Artwork Lightbox / Detail Modal -->
@@ -186,45 +190,88 @@
 
                 <div class="pt-2 flex items-center justify-end space-x-2">
                     <button type="button" onclick="closeModal('uploadModal')" class="bg-[#1a1a1a] text-gray-300 px-3.5 py-1.5 rounded hover:bg-[#252525] transition-colors">Cancel</button>
-                    <button type="submit" class="bg-blue-600 hover:bg-blue-500 text-white font-semibold px-4 py-1.5 rounded transition-colors shadow-lg shadow-blue-600/20">Publish</button>
+                    <button type="submit" id="submitBtn" class="bg-blue-600 hover:bg-blue-500 text-white font-semibold px-4 py-1.5 rounded transition-colors shadow-lg shadow-blue-600/20">Publish</button>
                 </div>
             </form>
         </div>
     </div>
 
-    <!-- Application Script -->
-    <script>
+    <!-- Custom Notification Modal -->
+    <div id="alertModal" class="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm hidden items-center justify-center p-4">
+        <div class="bg-[#101010] border border-[#222222] rounded-lg max-w-xs w-full p-4 text-center">
+            <p id="alertMessage" class="text-xs text-gray-200 mb-4"></p>
+            <button onclick="closeModal('alertModal')" class="bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold px-4 py-1.5 rounded transition-colors">OK</button>
+        </div>
+    </div>
+
+    <!-- Firebase SDKs & App Logic -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, deleteDoc, doc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
         let artworks = [];
-        let selectedArtId = null;
+        let selectedArtDocId = null;
         let searchQuery = '';
 
-        // Initialize on page load
-        window.onload = function() {
-            loadArtworks();
-            renderBoard();
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'raidspray-art-board';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+
+        let db, auth;
+
+        window.showAlert = function(msg) {
+            document.getElementById('alertMessage').textContent = msg;
+            const el = document.getElementById('alertModal');
+            el.classList.remove('hidden');
+            el.classList.add('flex');
         };
 
-        // Load from localStorage (Starts completely empty by default)
-        function loadArtworks() {
-            const saved = localStorage.getItem('raidspray_artworks');
-            if (saved) {
-                try {
-                    artworks = JSON.parse(saved);
-                } catch(e) {
-                    artworks = [];
-                }
-            } else {
-                artworks = [];
-            }
-        }
+        window.onload = async function() {
+            try {
+                if (Object.keys(firebaseConfig).length > 0) {
+                    const app = initializeApp(firebaseConfig);
+                    db = getFirestore(app);
+                    auth = getAuth(app);
 
-        // Save to localStorage
-        function saveArtworks() {
-            localStorage.setItem('raidspray_artworks', JSON.stringify(artworks));
-        }
+                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                        await signInWithCustomToken(auth, __initial_auth_token);
+                    } else {
+                        await signInAnonymously(auth);
+                    }
+
+                    const syncDot = document.getElementById('syncDot');
+                    const syncText = document.getElementById('syncText');
+                    syncDot.className = "w-2 h-2 rounded-full bg-green-500";
+                    syncText.textContent = "Synced to cloud";
+
+                    // Firestore Public Collection Path
+                    const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'artworks');
+                    
+                    onSnapshot(colRef, (snapshot) => {
+                        artworks = [];
+                        snapshot.forEach((docSnap) => {
+                            artworks.push({
+                                docId: docSnap.id,
+                                ...docSnap.data()
+                            });
+                        });
+                        // Sort by timestamp descending
+                        artworks.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+                        renderBoard();
+                    }, (error) => {
+                        console.error("Firestore sync error:", error);
+                        document.getElementById('syncText').textContent = "Cloud sync offline";
+                        syncDot.className = "w-2 h-2 rounded-full bg-red-500";
+                    });
+                }
+            } catch (e) {
+                console.error("Initialization error:", e);
+                document.getElementById('syncText').textContent = "Local Mode";
+            }
+        };
 
         // Modal Helpers
-        function openUploadModal() {
+        window.openUploadModal = function() {
             document.getElementById('uploadForm').reset();
             const el = document.getElementById('uploadModal');
             el.classList.remove('hidden');
@@ -232,7 +279,7 @@
             document.body.style.overflow = 'hidden';
         }
 
-        function closeModal(modalId) {
+        window.closeModal = function(modalId) {
             const el = document.getElementById(modalId);
             el.classList.add('hidden');
             el.classList.remove('flex');
@@ -240,12 +287,12 @@
         }
 
         // Search Handlers
-        function handleSearch() {
+        window.handleSearch = function() {
             searchQuery = document.getElementById('searchInput').value.toLowerCase().trim();
             renderBoard();
         }
 
-        function resetSearch() {
+        window.resetSearch = function() {
             document.getElementById('searchInput').value = '';
             searchQuery = '';
             renderBoard();
@@ -259,7 +306,6 @@
             const emptyTitle = document.getElementById('emptyTitle');
             const emptyDesc = document.getElementById('emptyDesc');
 
-            // Filter by search query on title
             const filtered = artworks.filter(art => {
                 if (!searchQuery) return true;
                 return art.title.toLowerCase().includes(searchQuery);
@@ -270,7 +316,7 @@
             if (artworks.length === 0) {
                 grid.innerHTML = '';
                 emptyTitle.textContent = "No artworks yet";
-                emptyDesc.textContent = "Upload your first piece of art to populate the board.";
+                emptyDesc.textContent = "Upload your first piece of art to populate the board across all devices.";
                 emptyState.classList.remove('hidden');
                 return;
             }
@@ -285,17 +331,14 @@
 
             emptyState.classList.add('hidden');
 
-            // Render post cards matching clean post-grid layout
             grid.innerHTML = filtered.map(art => `
-                <div onclick="openLightbox(${art.id})" class="group bg-[#101010] border border-[#222222] hover:border-blue-600 rounded overflow-hidden cursor-pointer transition-all duration-200 flex flex-col shadow-sm">
-                    <!-- Thumbnail Container -->
+                <div onclick="openLightbox('${art.docId}')" class="group bg-[#101010] border border-[#222222] hover:border-blue-600 rounded overflow-hidden cursor-pointer transition-all duration-200 flex flex-col shadow-sm">
                     <div class="relative aspect-square bg-black overflow-hidden flex items-center justify-center">
                         <img src="${art.image}" alt="${art.title}" loading="lazy" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300">
                         <div class="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-end p-2">
                             <span class="text-[10px] font-semibold text-white bg-blue-600 px-1.5 py-0.5 rounded shadow">View</span>
                         </div>
                     </div>
-                    <!-- Title Caption Underneath -->
                     <div class="p-2.5 bg-[#101010] flex-grow flex items-center">
                         <h4 class="text-xs font-semibold text-white truncate group-hover:text-blue-400 transition-colors w-full">${art.title}</h4>
                     </div>
@@ -303,38 +346,56 @@
             `).join('');
         }
 
-        // Handle Form Submission & Base64 Conversion
-        function handleArtSubmit(e) {
+        // Handle Art Submission
+        window.handleArtSubmit = async function(e) {
             e.preventDefault();
 
             const title = document.getElementById('artTitle').value.trim();
             const fileInput = document.getElementById('artFile');
+            const submitBtn = document.getElementById('submitBtn');
 
             if (fileInput.files && fileInput.files[0]) {
-                const reader = new FileReader();
-                reader.onload = function(event) {
-                    const newArt = {
-                        id: Date.now(),
-                        title: title,
-                        image: event.target.result,
-                        date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
-                    };
+                submitBtn.disabled = true;
+                submitBtn.textContent = "Uploading...";
 
-                    artworks.unshift(newArt);
-                    saveArtworks();
-                    closeModal('uploadModal');
-                    renderBoard();
+                const reader = new FileReader();
+                reader.onload = async function(event) {
+                    try {
+                        const newArt = {
+                            title: title,
+                            image: event.target.result,
+                            date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+                            createdAt: Date.now()
+                        };
+
+                        if (db) {
+                            const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'artworks');
+                            await addDoc(colRef, newArt);
+                        } else {
+                            // Fallback if offline/local
+                            artworks.unshift({ docId: 'local_' + Date.now(), ...newArt });
+                            renderBoard();
+                        }
+
+                        closeModal('uploadModal');
+                    } catch (err) {
+                        console.error("Error saving artwork:", err);
+                        showAlert("Failed to upload artwork. Please try again.");
+                    } finally {
+                        submitBtn.disabled = false;
+                        submitBtn.textContent = "Publish";
+                    }
                 };
                 reader.readAsDataURL(fileInput.files[0]);
             }
         }
 
-        // Open Lightbox Modal
-        function openLightbox(id) {
-            const art = artworks.find(a => a.id === id);
+        // Open Lightbox
+        window.openLightbox = function(docId) {
+            const art = artworks.find(a => a.docId === docId);
             if (!art) return;
 
-            selectedArtId = id;
+            selectedArtDocId = docId;
             document.getElementById('modalImg').src = art.image;
             document.getElementById('modalTitle').textContent = art.title;
             document.getElementById('modalDate').textContent = art.date || 'Recent';
@@ -346,15 +407,28 @@
         }
 
         // Delete Artwork
-        function deleteCurrentArtwork() {
-            if (!selectedArtId) return;
-            if (confirm('Delete this artwork from your gallery?')) {
-                artworks = artworks.filter(a => a.id !== selectedArtId);
-                saveArtworks();
+        window.deleteCurrentArtwork = async function() {
+            if (!selectedArtDocId) return;
+            
+            // Custom modal confirmation instead of confirm()
+            const confirmed = window.confirm ? window.confirm('Delete this artwork?') : true;
+            if (!confirmed) return;
+
+            try {
+                if (db && !selectedArtDocId.startsWith('local_')) {
+                    const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'artworks', selectedArtDocId);
+                    await deleteDoc(docRef);
+                } else {
+                    artworks = artworks.filter(a => a.docId !== selectedArtDocId);
+                    renderBoard();
+                }
                 closeModal('detailModal');
-                renderBoard();
+            } catch (err) {
+                console.error("Error deleting artwork:", err);
+                showAlert("Failed to delete artwork.");
             }
         }
     </script>
 </body>
 </html>
+```
